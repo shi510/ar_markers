@@ -1,5 +1,6 @@
 from __future__ import print_function
 from __future__ import division
+import numpy as np
 
 try:
     import cv2
@@ -46,6 +47,9 @@ def validate_and_turn(marker):
     marker = rot90(marker, k=rotation)
     return marker
 
+def angle_cos(p0, p1, p2):
+    d1, d2 = (p0-p1).astype('float'), (p2-p1).astype('float')
+    return abs( np.dot(d1, d2) / np.sqrt( np.dot(d1, d1)*np.dot(d2, d2) ) )
 
 def detect_markers(img):
     """
@@ -59,59 +63,81 @@ def detect_markers(img):
     """
     if len(img.shape) > 2:
         width, height, _ = img.shape
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray_ori = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
         width, height = img.shape
-        gray = img
-
-    edges = cv2.Canny(gray, 10, 100)
-    contours, hierarchy = cv2.findContours(edges.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)[-2:]
-
-    # We only keep the long enough contours
-    min_contour_length = min(width, height) / 50
-    contours = [contour for contour in contours if len(contour) > min_contour_length]
-    warped_size = 49
-    canonical_marker_coords = array(
-        (
-            (0, 0),
-            (warped_size - 1, 0),
-            (warped_size - 1, warped_size - 1),
-            (0, warped_size - 1)
-        ),
-        dtype='float32')
-
+        gray_ori = img
+    scale = [1, 1.5, 2]
+    # scale = [2]
     markers_list = []
-    for contour in contours:
-        approx_curve = cv2.approxPolyDP(contour, len(contour) * 0.01, True)
-        if not (len(approx_curve) == 4 and cv2.isContourConvex(approx_curve)):
-            continue
+    for s in scale:
+        size = (int(gray_ori.shape[1] // s), int(gray_ori.shape[0] // s))
+        gray = cv2.resize(gray_ori, dsize=size)
+        g1 = cv2.GaussianBlur(gray, (5, 5), 1.2)
+        g2 = cv2.GaussianBlur(gray, (5, 5), 1.3)
+        # diff = cv2.GaussianBlur(gray, (5, 5), 1.2)
+        diff = np.abs(g2-g1)
+        # diff = g2-g1
+        # _, diff = cv2.threshold(diff, 127, 255, cv2.THRESH_BINARY)
+        # diff = g1 - g2
 
-        sorted_curve = array(
-            cv2.convexHull(approx_curve, clockwise=False),
-            dtype='float32'
-        )
-        persp_transf = cv2.getPerspectiveTransform(sorted_curve, canonical_marker_coords)
-        warped_img = cv2.warpPerspective(img, persp_transf, (warped_size, warped_size))
+        edges = cv2.Canny(diff, 10, 100)
+        # cv2.imshow('edges', edges)
+        edges = cv2.dilate(edges, None, iterations=4)
+        edges = cv2.erode(edges, None, iterations=4)
+        # cv2.imshow('dilate', edges)
 
-        # do i really need to convert twice?
-        if len(warped_img.shape) > 2:
-            warped_gray = cv2.cvtColor(warped_img, cv2.COLOR_BGR2GRAY)
-        else:
+        contours, hierarchy = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)[-2:]
+
+        # We only keep the long enough contours
+        min_contour_length = min(width // s, height // s) / 50
+        contours = [contour for contour in contours if len(contour) > min_contour_length]
+        warped_size = 49
+        canonical_marker_coords = array(
+            (
+                (0, 0),
+                (warped_size - 1, 0),
+                (warped_size - 1, warped_size - 1),
+                (0, warped_size - 1)
+            ),
+            dtype='float32')
+
+
+        for contour in contours:
+            cnt_len = cv2.arcLength(contour, True)
+            approx_curve = cv2.approxPolyDP(contour, cnt_len * 0.02, True)
+            if not (len(approx_curve) == 4 and cv2.isContourConvex(approx_curve) and cv2.contourArea(approx_curve) > (500 / s)):
+                continue
+            cnt = approx_curve.reshape(-1, 2)
+            max_cos = np.max([angle_cos( cnt[i], cnt[(i+1) % 4], cnt[(i+2) % 4] ) for i in range(4)])
+            if max_cos >= 0.15:
+                continue
+
+            sorted_curve = array(
+                cv2.convexHull(approx_curve, clockwise=False),
+                dtype='float32'
+            )
+            persp_transf = cv2.getPerspectiveTransform(sorted_curve, canonical_marker_coords)
+            warped_img = cv2.warpPerspective(gray, persp_transf, (warped_size, warped_size))
             warped_gray = warped_img
 
-        _, warped_bin = cv2.threshold(warped_gray, 127, 255, cv2.THRESH_BINARY)
-        marker = warped_bin.reshape(
-            [MARKER_SIZE, warped_size // MARKER_SIZE, MARKER_SIZE, warped_size // MARKER_SIZE]
-        )
-        marker = marker.mean(axis=3).mean(axis=1)
-        marker[marker < 127] = 0
-        marker[marker >= 127] = 1
+            _, warped_bin = cv2.threshold(warped_gray, 127, 255, cv2.THRESH_BINARY)
 
-        try:
-            marker = validate_and_turn(marker)
-            hamming_code = extract_hamming_code(marker)
-            marker_id = int(decode(hamming_code), 2)
-            markers_list.append(HammingMarker(id=marker_id, contours=approx_curve))
-        except ValueError:
-            continue
+            marker = warped_bin.reshape(
+                [MARKER_SIZE, warped_size // MARKER_SIZE, MARKER_SIZE, warped_size // MARKER_SIZE]
+            )
+            marker = marker.mean(axis=3).mean(axis=1)
+            marker[marker < 127] = 0
+            marker[marker >= 127] = 1
+
+            try:
+                marker = validate_and_turn(marker)
+                hamming_code = extract_hamming_code(marker)
+                marker_id = int(decode(hamming_code), 2)
+                approx_curve = approx_curve * s
+                markers_list.append(HammingMarker(id=marker_id, contours=approx_curve.astype('int')))
+
+            except ValueError as e:
+                # print(e)
+                continue
     return markers_list
