@@ -6,6 +6,7 @@ except ImportError:
 
 from numpy import mean, binary_repr, zeros
 from numpy.random import randint
+from numpy import array
 # from scipy.ndimage import zoom  # get rid of this! - replaced w/ cv2.Resize
 
 from ar_markers.coding import encode, HAMMINGCODE_MARKER_POSITIONS
@@ -44,7 +45,7 @@ class HammingMarker(object):
     def draw_contour(self, img, color=(0, 255, 0), linewidth=5):
         cv2.drawContours(img, [self.contours], -1, color, linewidth)
 
-    def highlite_marker(self, img, contour_color=(0, 255, 0), text_color=(255, 0, 0), linewidth=5, text_thickness=2):
+    def highlite_marker(self, img, contour_color=(0, 255, 0), text_color=(0, 0, 255), linewidth=5, text_thickness=1):
         """
         This draws a bounding box around the marker on the image. NOTE: it returns
         a BGR image so the highlite is in color.
@@ -63,7 +64,12 @@ class HammingMarker(object):
         if len(img.shape) == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         self.draw_contour(img, color=contour_color, linewidth=linewidth)
-        cv2.putText(img, str(self.id), self.center, cv2.FONT_HERSHEY_SIMPLEX, text_thickness, text_color)
+        sorted_cnt = array(
+                cv2.convexHull(self.contours, clockwise=False),
+                dtype='float32'
+            )
+        pos = (sorted_cnt[0][0][0], sorted_cnt[0][0][1])
+        cv2.putText(img, str(self.id), pos, cv2.FONT_HERSHEY_SIMPLEX, text_thickness, text_color, thickness=5)
         return img
 
     @classmethod
